@@ -221,13 +221,63 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
             if (f is sfpdf.PdfCheckBoxField) {
               final dyn = f as dynamic;
               var applied = false;
+
+              // 1) Try common boolean-like properties
               try {
                 dyn.checked = checked;
                 applied = true;
               } catch (_) {}
-
               if (!applied) {
-                final List<String> onNames = ['Yes', 'On', '1', '/Yes', '/On'];
+                try {
+                  dyn.isChecked = checked;
+                  applied = true;
+                } catch (_) {}
+              }
+              if (!applied) {
+                try {
+                  dyn.selected = checked;
+                  applied = true;
+                } catch (_) {}
+              }
+              if (!applied) {
+                try {
+                  dyn.state = checked;
+                  applied = true;
+                } catch (_) {}
+              }
+
+              // 2) If not applied, try to detect appearance/export values and set the value accordingly
+              if (!applied) {
+                try {
+                  final states = dyn.onValues ?? dyn.exportValues ?? dyn.appearanceStates ?? dyn.states ?? dyn.options ?? dyn.items;
+                  if (states != null && states is Iterable) {
+                    // pick a non-off state if possible
+                    dynamic onState;
+                      try {
+                      onState = states.cast().firstWhere((s) {
+                        final sStr = s == null ? null : s.toString().toLowerCase();
+                        return sStr != null && sStr.isNotEmpty && !sStr.contains('off');
+                      });
+                    } catch (_) {
+                      try {
+                        onState = states.first;
+                      } catch (_) {
+                        onState = null;
+                      }
+                    }
+                    if (onState != null) {
+                      try {
+                        dyn.value = checked ? onState.toString() : '';
+                        applied = true;
+                      } catch (_) {}
+                    }
+                  }
+                } catch (_) {}
+              }
+
+              // 3) Try a set of common "on" names
+              if (!applied) {
+                final List<String> onNames = ['Yes', 'On', '1', '/Yes', '/On', 'Checked', '/1', 'True'];
                 for (final n in onNames) {
                   try {
                     dyn.value = checked ? n : '';
@@ -237,144 +287,73 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
                 }
               }
 
+              // 4) Try setter-like methods if present
               if (!applied) {
                 try {
-                  dyn.state = checked;
+                  // some implementations expose a setValue method
+                  dyn.setValue(checked ? true : false);
                   applied = true;
                 } catch (_) {}
               }
 
               // verifica se aplicou visualmente; caso não, desenha X no rect detectado
-              bool? post;
-              try {
-                post = dyn.checked as bool?;
-              } catch (_) {
-                post = null;
-              }
+              // bool? post;
+              // try {
+              //   post = dyn.checked as bool?;
+              // } catch (_) {
+              //   post = null;
+              // }
 
-              if (post != true && checked == true) {
-                Map<String, dynamic>? crect = _fieldRects[name];
-                int pageIndex = 0;
-                double left = 0, top = 0, width = double.nan, height = double.nan;
-                if (crect != null) {
-                  pageIndex = (crect['page'] as int?) ?? 0;
-                  left = (crect['left'] as double?) ?? 0;
-                  top = (crect['top'] as double?) ?? 0;
-                  width = (crect['width'] as double?) ?? double.nan;
-                  height = (crect['height'] as double?) ?? double.nan;
-                } else {
-                  try {
-                    final dynF = f as dynamic;
-                    final r = dynF.widget?.bounds ?? dynF.bounds ?? dynF.rectangle ?? dynF.rect;
-                    if (r != null) {
-                      left = (r.left ?? r.x ?? 0).toDouble();
-                      top = (r.top ?? r.y ?? 0).toDouble();
-                      width = (r.width ?? ((r.right != null) ? r.right - (r.left ?? r.x ?? 0) : 0)).toDouble();
-                      height = (r.height ?? ((r.bottom != null) ? r.bottom - (r.top ?? r.y ?? 0) : 0)).toDouble();
-                    }
-                    try {
-                      pageIndex = (dynF.pageIndex ?? dynF.pageNumber ?? (dynF.widget?.pageIndex ?? dynF.widget?.pageNumber ?? (dynF.page != null ? dynF.page.index : null))) as int? ?? 0;
-                    } catch (_) {
-                      pageIndex = 0;
-                    }
-                  } catch (_) {}
-                }
+              // if (post != true && checked == true) {
+              //   Map<String, dynamic>? crect = _fieldRects[name];
+              //   int pageIndex = 0;
+              //   double left = 0, top = 0, width = double.nan, height = double.nan;
+              //   if (crect != null) {
+              //     pageIndex = (crect['page'] as int?) ?? 0;
+              //     left = (crect['left'] as double?) ?? 0;
+              //     top = (crect['top'] as double?) ?? 0;
+              //     width = (crect['width'] as double?) ?? double.nan;
+              //     height = (crect['height'] as double?) ?? double.nan;
+              //   } else {
+              //     try {
+              //       final dynF = f as dynamic;
+              //       final r = dynF.widget?.bounds ?? dynF.bounds ?? dynF.rectangle ?? dynF.rect;
+              //       if (r != null) {
+              //         left = (r.left ?? r.x ?? 0).toDouble();
+              //         top = (r.top ?? r.y ?? 0).toDouble();
+              //         width = (r.width ?? ((r.right != null) ? r.right - (r.left ?? r.x ?? 0) : 0)).toDouble();
+              //         height = (r.height ?? ((r.bottom != null) ? r.bottom - (r.top ?? r.y ?? 0) : 0)).toDouble();
+              //       }
+              //       try {
+              //         pageIndex = (dynF.pageIndex ?? dynF.pageNumber ?? (dynF.widget?.pageIndex ?? dynF.widget?.pageNumber ?? (dynF.page != null ? dynF.page.index : null))) as int? ?? 0;
+              //       } catch (_) {
+              //         pageIndex = 0;
+              //       }
+              //     } catch (_) {}
+              //   }
 
-                if (width.isNaN || width <= 0) width = 12;
-                if (height.isNaN || height <= 0) height = 12;
-                try {
-                  final sfpdf.PdfPage page = loaded.pages[pageIndex];
-                  final leftX = left;
-                  final topY = top;
-                  final pen = sfpdf.PdfPen(sfpdf.PdfColor(0, 0, 0), width: 1.5);
-                  page.graphics.drawLine(pen, Offset(leftX, topY), Offset(leftX + width, topY + height));
-                  page.graphics.drawLine(pen, Offset(leftX + width, topY), Offset(leftX, topY + height));
-                } catch (_) {}
-              }
+              //   if (width.isNaN || width <= 0) width = 12;
+              //   if (height.isNaN || height <= 0) height = 12;
+              //   try {
+              //     final sfpdf.PdfPage page = loaded.pages[pageIndex];
+              //     final leftX = left;
+              //     final topY = top;
+              //     final pen = sfpdf.PdfPen(sfpdf.PdfColor(0, 0, 0), width: 1.5);
+              //     page.graphics.drawLine(pen, Offset(leftX, topY), Offset(leftX + width, topY + height));
+              //     page.graphics.drawLine(pen, Offset(leftX + width, topY), Offset(leftX, topY + height));
+              //   } catch (_) {}
+              // }
             }
           } catch (_) {}
         }
       }
     }
 
-    // coloca assinatura: tenta annotations primeiro, senão fallback por campo 'assinatura_cliente'
-    int? foundPage;
-    dynamic foundRect;
-    try {
-      for (int p = 0; p < loaded.pages.count; p++) {
-        final page = loaded.pages[p];
-        final annots = page.annotations;
-        for (int a = 0; a < annots.count; a++) {
-          final annot = annots[a];
-          final dyn = annot as dynamic;
-          String? contents;
-          try {
-            contents = (dyn.contents ?? dyn.subject ?? dyn.title ?? dyn.name ?? dyn.fieldName)?.toString();
-          } catch (_) {
-            contents = null;
-          }
-          if (contents != null && contents.toLowerCase().contains('signature')) {
-            try {
-              foundRect = dyn.bounds ?? dyn.rectangle ?? dyn.rect ?? dyn.widget?.bounds;
-            } catch (_) {
-              foundRect = null;
-            }
-            foundPage = p;
-            break;
-          }
-        }
-        if (foundPage != null) break;
-      }
-    } catch (_) {}
-
+    // colocar assinatura usando apenas o campo 'assinatura_cliente' (sem annotations)
     final sfpdf.PdfBitmap bm = bitmap;
 
-    if (foundPage != null && foundRect != null) {
-      try {
-        final dynamic rect = foundRect;
-        int pageIndex = foundPage;
-        double left = _num(rect.left, _num(rect.x, 0));
-        double top = _num(rect.top, _num(rect.y, 0));
-        double width = _num(rect.width, double.nan);
-        double height = _num(rect.height, double.nan);
-        if (width.isNaN) {
-          final double right = _num(rect.right, double.nan);
-          if (!right.isNaN) width = right - left;
-        }
-        if (height.isNaN) {
-          final double bottom = _num(rect.bottom, double.nan);
-          if (!bottom.isNaN) height = bottom - top;
-        }
-        if (width <= 0) width = 160;
-        if (height <= 0) height = 60;
-        final double rectBottom = top + height;
-
-        double drawW, drawH;
-        if (imgW > 0 && imgH > 0 && width > 0) {
-          final ratio = imgH / imgW;
-          drawW = width;
-          drawH = drawW * ratio;
-          final pg = loaded.pages[pageIndex];
-          if (drawH > pg.size.height) {
-            drawH = pg.size.height * 0.25;
-            drawW = drawH / ratio;
-          }
-        } else {
-          drawW = width;
-          drawH = height;
-        }
-
-        double drawX = left;
-        double drawY = rectBottom - drawH;
-        final sfpdf.PdfPage page = loaded.pages[pageIndex];
-        if (drawX < 0) drawX = 0;
-        if (drawY < 0) drawY = 0;
-        if (drawX + drawW > page.size.width) drawX = (page.size.width - drawW).clamp(0, page.size.width);
-        if (drawY + drawH > page.size.height) drawY = (page.size.height - drawH).clamp(0, page.size.height);
-        page.graphics.drawImage(bm, Rect.fromLTWH(drawX, drawY, drawW, drawH));
-      } catch (_) {}
-    } else if (form != null) {
-      // fallback: procurar campo assinatura_cliente
+    if (form != null) {
+      // procurar campo assinatura_cliente
       for (int i = 0; i < form.fields.count; i++) {
         final sfpdf.PdfField f = form.fields[i];
         final String name = f.name ?? '';
@@ -451,7 +430,6 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
           if (drawY + drawH > page.size.height) drawY = (page.size.height - drawH).clamp(0, page.size.height);
 
           page.graphics.drawImage(bm, Rect.fromLTWH(drawX, drawY, drawW, drawH));
-          break;
         } catch (_) {}
       }
     }
