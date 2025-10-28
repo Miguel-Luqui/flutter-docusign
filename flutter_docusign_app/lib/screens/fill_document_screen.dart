@@ -16,6 +16,7 @@ class FillDocumentScreen extends StatefulWidget {
 
 class _FillDocumentScreenState extends State<FillDocumentScreen> {
   final Map<String, TextEditingController> _controllers = {};
+  final Map<String, bool> _checkboxValues = {};
   Uint8List? _signature;
   bool _loading = true;
 
@@ -28,20 +29,37 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
   Future<void> _extractFields() async {
     setState(() => _loading = true);
     _controllers.clear();
+    _checkboxValues.clear();
     final sfpdf.PdfDocument doc =
         sfpdf.PdfDocument(inputBytes: widget.originalPdfBytes);
     final sfpdf.PdfForm? form = doc.form;
     if (form != null) {
       for (int i = 0; i < form.fields.count; i++) {
         final sfpdf.PdfField f = form.fields[i];
-  final String name = f.name ?? 'field_$i';
-  // ignorar campo de assinatura na lista de inputs (aceita sufixo .<page>)
-  if (name.startsWith('assinatura_cliente')) continue;
-        String initial = '';
+        final String name = f.name ?? 'field_$i';
+        // ignore signature fields in the input list (accepts suffix .<page>)
+        if (name.startsWith('assinatura_cliente')) continue;
         try {
-          if (f is sfpdf.PdfTextBoxField) initial = f.text;
-        } catch (_) {}
-        _controllers[name] = TextEditingController(text: initial);
+          if (f is sfpdf.PdfTextBoxField) {
+            final dyn = f as dynamic;
+            final String initial = (dyn.text != null) ? dyn.text.toString() : '';
+            _controllers[name] = TextEditingController(text: initial);
+          } else if (f is sfpdf.PdfCheckBoxField) {
+            // capture initial checked state (use dynamic to avoid static getter mismatch)
+            try {
+              final dyn = f as dynamic;
+              _checkboxValues[name] = (dyn.checked == true);
+            } catch (_) {
+              _checkboxValues[name] = false;
+            }
+          } else {
+            // default to a text controller for unknown fields
+            _controllers[name] = TextEditingController();
+          }
+        } catch (_) {
+          // best-effort: add an empty controller
+          _controllers[name] = TextEditingController();
+        }
       }
     }
     doc.dispose();
@@ -116,6 +134,8 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
 
     // DEBUG: list AcroForm fields + their dynamic rects/pageIndex if available
     final sfpdf.PdfForm? form = loaded.form;
+    // cache of field rects detected while scanning the form (name -> {page,left,top,width,height})
+    final Map<String, Map<String, dynamic>> _fieldRects = {};
     if (form != null) {
       debugPrint('DEBUG-FORM fields=${form.fields.count}');
       for (int i = 0; i < form.fields.count; i++) {
@@ -155,6 +175,8 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
                     .toDouble();
             debugPrint(
                 'DEBUG-FIELD-RECT name=$name left=${left.toStringAsFixed(1)} top=${top.toStringAsFixed(1)} w=${width.toStringAsFixed(1)} h=${height.toStringAsFixed(1)}');
+            // cache the rect for later use (fallbacks)
+            _fieldRects[name] = {'page': pageIndex, 'left': left, 'top': top, 'width': width, 'height': height};
           } catch (e) {
             debugPrint('DEBUG-FIELD-RECT extract error: $e');
           }
@@ -163,6 +185,8 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
     } else {
       debugPrint('DEBUG: no AcroForm present');
     }
+
+    debugPrint('DEBUG-FIELD-RECTS KEYS -> ${_fieldRects.keys.toList()}');
 
     // DEBUG: scan annotations per page and print props (contents/subject/name/title/rect)
     for (int p = 0; p < loaded.pages.count; p++) {
@@ -221,14 +245,121 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
     if (form != null) {
       for (int i = 0; i < form.fields.count; i++) {
         final sfpdf.PdfField f = form.fields[i];
-  final String name = f.name ?? '';
-  // ignore signature fields (they can be named like assinatura_cliente or assinatura_cliente.<page>)
-  if (name.startsWith('assinatura_cliente')) continue;
+    final String name = f.name ?? '';
+    // ignore signature fields (they can be named like assinatura_cliente or assinatura_cliente.<page>)
+    if (name.startsWith('assinatura_cliente')) continue;
+        // text fields
         if (_controllers.containsKey(name)) {
           final val = _controllers[name]!.text;
           try {
-            if (f is sfpdf.PdfTextBoxField) f.text = val;
+            if (f is sfpdf.PdfTextBoxField) {
+              final dyn = f as dynamic;
+              try {
+                dyn.text = val;
+              } catch (_) {
+                // fallback
+                try {
+                  f.text = val;
+                } catch (_) {}
+              }
+            }
           } catch (_) {}
+        }
+        // checkbox fields
+        if (_checkboxValues.containsKey(name)) {
+          final bool checked = _checkboxValues[name] ?? false;
+          try {
+            if (f is sfpdf.PdfCheckBoxField) {
+              final dyn = f as dynamic;
+              // debug: inspect before state
+              try {
+                debugPrint('DEBUG-CHECKBOX APPLY -> name=$name before checked=${dyn.checked} value=${dyn.value ?? dyn.state}');
+              } catch (_) {
+                debugPrint('DEBUG-CHECKBOX APPLY -> name=$name before unknown state');
+              }
+              // try multiple ways to set the checkbox state (including common On names)
+              var applied = false;
+              try {
+                dyn.checked = checked;
+                applied = true;
+              } catch (_) {}
+              // try common appearance/value names
+              if (!applied) {
+                final List<String> onNames = ['Yes', 'On', '1', '/Yes', '/On'];
+                for (final n in onNames) {
+                  try {
+                    dyn.value = checked ? n : '';
+                    applied = true;
+                    break;
+                  } catch (_) {}
+                }
+              }
+              try {
+                if (!applied) {
+                  dyn.state = checked;
+                  applied = true;
+                }
+              } catch (_) {}
+
+              // read back
+              bool? post;
+              try {
+                post = dyn.checked as bool?;
+              } catch (_) {
+                post = null;
+              }
+              debugPrint('DEBUG-CHECKBOX APPLY -> name=$name attempted=$applied after checked=$post');
+
+              // if the setter didn't persist the visible check, draw a fallback X on the page
+              if (post != true && checked == true) {
+                // try to use cached rect discovered earlier when scanning the form
+                Map<String, dynamic>? crect = _fieldRects[name];
+                debugPrint('DEBUG-CHECKBOX CACHED-RECT -> name=$name crect=$crect');
+                int pageIndex = 0;
+                double left = 0, top = 0, width = double.nan, height = double.nan;
+                if (crect != null) {
+                  pageIndex = (crect['page'] as int?) ?? 0;
+                  left = (crect['left'] as double?) ?? 0;
+                  top = (crect['top'] as double?) ?? 0;
+                  width = (crect['width'] as double?) ?? double.nan;
+                  height = (crect['height'] as double?) ?? double.nan;
+                } else {
+                  // try dynamic extraction as fallback
+                  try {
+                    final dynF = f as dynamic;
+                    final r = dynF.widget?.bounds ?? dynF.bounds ?? dynF.rectangle ?? dynF.rect;
+                    if (r != null) {
+                      left = (r.left ?? r.x ?? 0).toDouble();
+                      top = (r.top ?? r.y ?? 0).toDouble();
+                      width = (r.width ?? ((r.right != null) ? r.right - (r.left ?? r.x ?? 0) : 0)).toDouble();
+                      height = (r.height ?? ((r.bottom != null) ? r.bottom - (r.top ?? r.y ?? 0) : 0)).toDouble();
+                    }
+                    try {
+                      pageIndex = (dynF.pageIndex ?? dynF.pageNumber ?? (dynF.widget?.pageIndex ?? dynF.widget?.pageNumber ?? (dynF.page != null ? dynF.page.index : null))) as int? ?? 0;
+                    } catch (_) {
+                      pageIndex = 0;
+                    }
+                  } catch (_) {}
+                }
+
+                if (width.isNaN || width <= 0) width = 12;
+                if (height.isNaN || height <= 0) height = 12;
+                try {
+                  final sfpdf.PdfPage page = loaded.pages[pageIndex];
+                  final leftX = left;
+                  final topY = top;
+                  final pen = sfpdf.PdfPen(sfpdf.PdfColor(0, 0, 0), width: 1.5);
+                  page.graphics.drawLine(pen, Offset(leftX, topY), Offset(leftX + width, topY + height));
+                  page.graphics.drawLine(pen, Offset(leftX + width, topY), Offset(leftX, topY + height));
+                  debugPrint('DEBUG-CHECKBOX FALLBACK -> drew X on page=$pageIndex rect=(${leftX.toStringAsFixed(1)},${topY.toStringAsFixed(1)},${width.toStringAsFixed(1)},${height.toStringAsFixed(1)})');
+                } catch (e) {
+                  debugPrint('DEBUG-CHECKBOX FALLBACK locate/draw error: $e');
+                }
+              }
+            }
+          } catch (e) {
+            debugPrint('DEBUG-CHECKBOX APPLY ERROR -> name=$name error=$e');
+          }
         }
       }
     }
@@ -710,6 +841,18 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
                           labelText: e.key,
                           border: const OutlineInputBorder(),
                         ),
+                      ),
+                    ),
+                  ),
+                  // render checkbox inputs
+                  ..._checkboxValues.entries.map(
+                    (entry) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: CheckboxListTile(
+                        title: Text(entry.key),
+                        value: _checkboxValues[entry.key] ?? false,
+                        onChanged: (v) => setState(() => _checkboxValues[entry.key] = v ?? false),
+                        controlAffinity: ListTileControlAffinity.leading,
                       ),
                     ),
                   ),
