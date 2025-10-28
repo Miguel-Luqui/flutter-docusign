@@ -102,7 +102,7 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
   }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Desenhe sua assinatura')),
+      appBar: AppBar(title: const Text('Draw your signature')),
       body: Column(
         children: [
           const SizedBox(height: 12),
@@ -136,7 +136,7 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
             child: Text(
-              'Assine na área branca acima',
+              'Sign in the white area above',
               style: TextStyle(color: Colors.grey[700]),
             ),
           ),
@@ -159,7 +159,7 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
                         backgroundColor: Colors.blueGrey[800],
                       ),
                       onPressed: _clear,
-                      child: const Text('Limpar'),
+                      child: const Text('Clear'),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -173,7 +173,7 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
                         final bytes = await _exportSignature();
                         Navigator.of(context).pop(bytes);
                       },
-                      child: const Text('Confirmar'),
+                      child: const Text('Confirm'),
                     ),
                   ),
                 ],

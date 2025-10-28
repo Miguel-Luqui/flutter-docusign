@@ -55,7 +55,7 @@ class _DocumentFocusScreenState extends State<DocumentFocusScreen> {
                         scrollDirection: Axis.vertical),
                   )
                 else
-                  const Center(child: Text('PDF não carregado')),
+                  const Center(child: Text('PDF not loaded')),
                 Positioned(
                   right: 16,
                   bottom: 16,
