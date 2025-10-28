@@ -59,7 +59,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         String initial = '';
         try {
           if (f is sfpdf.PdfTextBoxField) {
-            initial = (f).text ?? '';
+            initial = (f).text;
           }
         } catch (_) {}
         _fieldControllers[name] = TextEditingController(text: initial);
@@ -174,7 +174,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     }
 
     try {
-      loaded.form?.flattenAllFields();
+      loaded.form.flattenAllFields();
     } catch (_) {}
 
     final List<int> outBytes = await loaded.save();
