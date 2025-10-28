@@ -165,27 +165,24 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
       }
     }
 
-    // se não há assinatura, apenas salva e retorna
-    if (_signature == null) {
-      try {
-        loaded.form.flattenAllFields();
-      } catch (_) {}
-      final List<int> out = await loaded.save();
-      loaded.dispose();
-      return Uint8List.fromList(out);
-    }
-
-    // prepara imagem da assinatura
-    final sfpdf.PdfBitmap bitmap = sfpdf.PdfBitmap(_signature!);
+    // prepara imagem da assinatura (somente se houver assinatura)
     int imgW = 0, imgH = 0;
-    try {
-      final codec = await ui.instantiateImageCodec(_signature!);
-      final frame = await codec.getNextFrame();
-      imgW = frame.image.width;
-      imgH = frame.image.height;
-    } catch (_) {
-      imgW = 0;
-      imgH = 0;
+    sfpdf.PdfBitmap? bitmap;
+    if (_signature != null) {
+      try {
+        bitmap = sfpdf.PdfBitmap(_signature!);
+      } catch (_) {
+        bitmap = null;
+      }
+      try {
+        final codec = await ui.instantiateImageCodec(_signature!);
+        final frame = await codec.getNextFrame();
+        imgW = frame.image.width;
+        imgH = frame.image.height;
+      } catch (_) {
+        imgW = 0;
+        imgH = 0;
+      }
     }
 
     // preencher campos (texto e checkbox)
@@ -296,6 +293,25 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
                 } catch (_) {}
               }
 
+              // If applied, try to force widget/appearance regeneration so visuals update
+              if (applied) {
+                try {
+                  // common method names that might regenerate appearances
+                  try { dyn.updateAppearance(); } catch (_) {}
+                  try { dyn.refreshAppearance(); } catch (_) {}
+                  try { dyn.regenerateAppearance(); } catch (_) {}
+                  try { dyn.updateWidgetAppearance(); } catch (_) {}
+                  try { dyn.updateWidget(); } catch (_) {}
+                  try { dyn.createAppearance(); } catch (_) {}
+                  try { dyn.generateAppearance(); } catch (_) {}
+                  try { dyn.invalidate(); } catch (_) {}
+                } catch (_) {}
+              } else {
+                // Optional: log for debugging when we couldn't apply any state
+                // ignore: avoid_print
+                print('Warning: could not apply checkbox visual state for field "$name"');
+              }
+
               // verifica se aplicou visualmente; caso não, desenha X no rect detectado
               // bool? post;
               // try {
@@ -349,8 +365,8 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
       }
     }
 
-    // colocar assinatura usando apenas o campo 'assinatura_cliente' (sem annotations)
-    final sfpdf.PdfBitmap bm = bitmap;
+  // colocar assinatura usando apenas o campo 'assinatura_cliente' (sem annotations)
+  final sfpdf.PdfBitmap? bm = bitmap;
 
     if (form != null) {
       // procurar campo assinatura_cliente
@@ -429,7 +445,9 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
           if (drawX + drawW > page.size.width) drawX = (page.size.width - drawW).clamp(0, page.size.width);
           if (drawY + drawH > page.size.height) drawY = (page.size.height - drawH).clamp(0, page.size.height);
 
-          page.graphics.drawImage(bm, Rect.fromLTWH(drawX, drawY, drawW, drawH));
+          if (bm != null) {
+            page.graphics.drawImage(bm, Rect.fromLTWH(drawX, drawY, drawW, drawH));
+          }
         } catch (_) {}
       }
     }
