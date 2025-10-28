@@ -1,10 +1,11 @@
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 
 class SignaturePadScreen extends StatefulWidget {
-  const SignaturePadScreen({super.key});
+  final double? targetAspectRatio; // width / height
+  const SignaturePadScreen({super.key, this.targetAspectRatio});
 
   @override
   _SignaturePadScreenState createState() => _SignaturePadScreenState();
@@ -29,6 +30,16 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
       format: ui.ImageByteFormat.png,
     );
     return byteData?.buffer.asUint8List();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // force landscape while the signature pad is open
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
   }
 
   void _clear() => setState(() {
@@ -67,10 +78,28 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
   }
 
   @override
+  void dispose() {
+    // restore portrait orientations when leaving the signature pad
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final canvasWidth = (screenWidth * 0.95).clamp(280.0, 900.0);
-    const canvasHeight = 220.0;
+  final screenWidth = MediaQuery.of(context).size.width;
+  // make the drawable area flexible: prefer targetAspectRatio when provided
+  final canvasWidth = (screenWidth * 0.95).clamp(280.0, 1400.0);
+  double canvasHeight;
+  if (widget.targetAspectRatio != null && widget.targetAspectRatio! > 0) {
+    // aspect = width / height -> height = width / aspect
+    canvasHeight = (canvasWidth / widget.targetAspectRatio!).clamp(80.0, 800.0);
+  } else {
+    // default: stretched signature (approx 4:1)
+    canvasHeight = (canvasWidth * 0.25).clamp(120.0, 320.0);
+  }
 
     return Scaffold(
       appBar: AppBar(title: const Text('Desenhe sua assinatura')),

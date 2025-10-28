@@ -34,9 +34,9 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
     if (form != null) {
       for (int i = 0; i < form.fields.count; i++) {
         final sfpdf.PdfField f = form.fields[i];
-        final String name = f.name ?? 'field_$i';
-        // ignorar campo de assinatura na lista de inputs
-        if (name == 'assinatura_cliente') continue;
+  final String name = f.name ?? 'field_$i';
+  // ignorar campo de assinatura na lista de inputs (aceita sufixo .<page>)
+  if (name.startsWith('assinatura_cliente')) continue;
         String initial = '';
         try {
           if (f is sfpdf.PdfTextBoxField) initial = f.text;
@@ -49,8 +49,55 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
   }
 
   Future<void> _openSignaturePad() async {
+    // try to detect the signature field aspect ratio from the PDF so the pad can size accordingly
+    double? aspectRatio;
+    try {
+      final sfpdf.PdfDocument doc =
+          sfpdf.PdfDocument(inputBytes: widget.originalPdfBytes);
+      final sfpdf.PdfForm? form = doc.form;
+      if (form != null) {
+        for (int i = 0; i < form.fields.count; i++) {
+          final sfpdf.PdfField f = form.fields[i];
+          final String name = f.name ?? '';
+          if (!name.startsWith('assinatura_cliente')) continue;
+          // try to get rect defensively (use dynamic to avoid static getter errors)
+          dynamic rect;
+          try {
+            final dyn = f as dynamic;
+            rect = dyn.bounds ?? dyn.rectangle ?? dyn.rect;
+          } catch (_) {
+            rect = null;
+          }
+          if (rect != null) {
+            double w = 0, h = 0;
+            try {
+              w = (rect.width ?? ((rect.right != null) ? rect.right - (rect.left ?? rect.x ?? 0) : 0)).toDouble();
+            } catch (_) {
+              try {
+                w = (rect.right - rect.left).toDouble();
+              } catch (_) {}
+            }
+            try {
+              h = (rect.height ?? ((rect.bottom != null) ? rect.bottom - (rect.top ?? rect.y ?? 0) : 0)).toDouble();
+            } catch (_) {
+              try {
+                h = (rect.bottom - rect.top).toDouble();
+              } catch (_) {}
+            }
+            if (w > 0 && h > 0) {
+              aspectRatio = w / h;
+              break;
+            }
+          }
+        }
+      }
+      doc.dispose();
+    } catch (e) {
+      debugPrint('Could not detect signature field aspect ratio: $e');
+    }
+
     final Uint8List? bytes = await Navigator.of(context).push<Uint8List>(
-      MaterialPageRoute(builder: (_) => const SignaturePadScreen()),
+      MaterialPageRoute(builder: (_) => SignaturePadScreen(targetAspectRatio: aspectRatio)),
     );
     if (bytes != null) setState(() => _signature = bytes);
   }
@@ -174,8 +221,9 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
     if (form != null) {
       for (int i = 0; i < form.fields.count; i++) {
         final sfpdf.PdfField f = form.fields[i];
-        final String name = f.name ?? '';
-        if (name == 'assinatura_cliente') continue;
+  final String name = f.name ?? '';
+  // ignore signature fields (they can be named like assinatura_cliente or assinatura_cliente.<page>)
+  if (name.startsWith('assinatura_cliente')) continue;
         if (_controllers.containsKey(name)) {
           final val = _controllers[name]!.text;
           try {
@@ -234,27 +282,51 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
     Map<String, dynamic>? _locateFieldWidget(
         dynamic field, sfpdf.PdfDocument loaded) {
       try {
-        // 1) widget singular
+        dynamic rect;
+        int? p;
+
+        // small helper to extract width/height (try width/height, else right-left / bottom-top)
+        double _extractWidth(dynamic r) {
+          double w = _toDouble(r?.width, double.nan);
+          if (w.isNaN) {
+            try {
+              final rn = _num(r?.right, double.nan);
+              final ln = _num(r?.left, double.nan);
+              if (!rn.isNaN && !ln.isNaN) return rn - ln;
+            } catch (_) {}
+          }
+          return w;
+        }
+
+        double _extractHeight(dynamic r) {
+          double h = _toDouble(r?.height, double.nan);
+          if (h.isNaN) {
+            try {
+              final bn = _num(r?.bottom, double.nan);
+              final tn = _num(r?.top, double.nan);
+              if (!bn.isNaN && !tn.isNaN) return bn - tn;
+            } catch (_) {}
+          }
+          return h;
+        }
+
+        // 1) try singular widget
         try {
           final w = field.widget;
           if (w != null) {
-            dynamic rect = w.bounds ?? w.rectangle ?? w.rect;
-            int? p = (w.pageIndex ?? w.pageNumber) as int?;
+            rect = w.bounds ?? w.rectangle ?? w.rect;
+            p = (w.pageIndex ?? w.pageNumber ?? (w.page != null ? w.page.index : null)) as int?;
             if (rect != null || p != null) {
-              final left = _toDouble(rect?.left ?? rect?.x);
-              final top = _toDouble(rect?.top ?? rect?.y);
-              final width = _toDouble(rect?.width, double.nan);
-              final height = _toDouble(rect?.height, double.nan);
-              return {
-                'page': p,
-                'left': left,
-                'top': top,
-                'width': width,
-                'height': height
-              };
+              double left = _toDouble(rect?.left ?? rect?.x, double.nan);
+              double top = _toDouble(rect?.top ?? rect?.y, double.nan);
+              double width = _extractWidth(rect);
+              double height = _extractHeight(rect);
+              return {'page': p, 'left': left.isNaN ? 0.0 : left, 'top': top.isNaN ? 0.0 : top, 'width': width, 'height': height};
             }
           }
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('locateFieldWidget widget-check error: $e');
+        }
 
         // 2) widgets collection
         try {
@@ -262,50 +334,89 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
           if (widgets != null) {
             for (int wi = 0; wi < widgets.count; wi++) {
               final w = widgets[wi];
-              dynamic rect = w.bounds ?? w.rectangle ?? w.rect;
-              int? p = (w.pageIndex ?? w.pageNumber) as int?;
-              final left = _toDouble(rect?.left ?? rect?.x);
-              final top = _toDouble(rect?.top ?? rect?.y);
-              final width = _toDouble(rect?.width, double.nan);
-              final height = _toDouble(rect?.height, double.nan);
-              if (p != null || (rect != null)) {
-                return {
-                  'page': p,
-                  'left': left,
-                  'top': top,
-                  'width': width,
-                  'height': height
-                };
+              rect = w.bounds ?? w.rectangle ?? w.rect;
+              p = (w.pageIndex ?? w.pageNumber ?? (w.page != null ? w.page.index : null)) as int?;
+              double left = _toDouble(rect?.left ?? rect?.x, double.nan);
+              double top = _toDouble(rect?.top ?? rect?.y, double.nan);
+              double width = _extractWidth(rect);
+              double height = _extractHeight(rect);
+              if (p != null || rect != null) {
+                return {'page': p, 'left': left.isNaN ? 0.0 : left, 'top': top.isNaN ? 0.0 : top, 'width': width, 'height': height};
               }
             }
           }
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('locateFieldWidget widgets-check error: $e');
+        }
 
-        // 3) field-level rects (field.bounds/rectangle)
+        // 3) field-level rects (field.bounds/rectangle/rect)
         try {
-          dynamic rect = field.bounds ?? field.rectangle ?? field.rect;
-          int? p = (field.pageIndex ?? field.pageNumber) as int?;
-          if (rect != null || p != null) {
-            final left = _toDouble(rect?.left ?? rect?.x);
-            final top = _toDouble(rect?.top ?? rect?.y);
-            final width = _toDouble(rect?.width, double.nan);
-            final height = _toDouble(rect?.height, double.nan);
-            return {
-              'page': p,
-              'left': left,
-              'top': top,
-              'width': width,
-              'height': height
-            };
+          // get rect defensively (some field implementations expose bounds/rectangle/rect)
+          try {
+            rect = field.bounds ?? field.rectangle ?? field.rect;
+          } catch (_) {
+            rect = null;
           }
-        } catch (_) {}
 
-        // 4) fallback: if we have a rect without page, try map it to a page by overlap/cumulative heights
-        // this will be handled by caller if page == null
+          // get page index defensively (property may not exist)
+          try {
+            p = (field.pageIndex ?? field.pageNumber ?? (field.page != null ? field.page.index : null)) as int?;
+          } catch (_) {
+            p = null;
+          }
+
+          if (rect != null || p != null) {
+            double left = _toDouble(rect?.left ?? rect?.x, double.nan);
+            double top = _toDouble(rect?.top ?? rect?.y, double.nan);
+            double width = _extractWidth(rect);
+            double height = _extractHeight(rect);
+
+            // If page is still null but we have a rect, try mapping to a page by checking per-page containment
+            if (p == null && rect != null) {
+              // try local page coords containment
+              for (int pi = 0; pi < loaded.pages.count; pi++) {
+                final pg = loaded.pages[pi];
+                final ph = pg.size.height;
+                if (!height.isNaN) {
+                  if ((top >= 0 && top + height <= ph + 1) || (top >= 0 && top <= ph + 1)) {
+                    p = pi;
+                    break;
+                  }
+                } else {
+                  if (top >= 0 && top <= ph + 1) {
+                    p = pi;
+                    break;
+                  }
+                }
+              }
+
+              // cumulative mapping fallback (if rect is in global coords)
+              if (p == null) {
+                double cumulative = 0.0;
+                for (int pi = 0; pi < loaded.pages.count; pi++) {
+                  final pg = loaded.pages[pi];
+                  if (top >= cumulative && top < cumulative + pg.size.height) {
+                    p = pi;
+                    // convert top to local page coords
+                    top = top - cumulative;
+                    break;
+                  }
+                  cumulative += pg.size.height;
+                }
+              }
+            }
+
+            return {'page': p, 'left': left.isNaN ? 0.0 : left, 'top': top.isNaN ? 0.0 : top, 'width': width, 'height': height};
+          }
+        } catch (e) {
+          debugPrint('locateFieldWidget field-rect-check error: $e');
+        }
+
+        return null;
       } catch (e) {
         debugPrint('locateFieldWidget error: $e');
+        return null;
       }
-      return null;
     }
 
     // procura annotation com texto "signature" (case-insensitive)
@@ -419,8 +530,10 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
         if (drawY + drawH > page.size.height)
           drawY = (page.size.height - drawH).clamp(0, page.size.height);
 
-        debugPrint(
-            'FINAL SIGN placement -> page:$pageIndex left:${left.toStringAsFixed(1)} top:${top.toStringAsFixed(1)} w:${width.toStringAsFixed(1)} h:${height.toStringAsFixed(1)} drawX:${drawX.toStringAsFixed(1)} drawY:${drawY.toStringAsFixed(1)} drawW:${drawW.toStringAsFixed(1)} drawH:${drawH.toStringAsFixed(1)}');
+    debugPrint(
+      'FINAL SIGN placement -> page:$pageIndex left:${left.toStringAsFixed(1)} top:${top.toStringAsFixed(1)} w:${width.toStringAsFixed(1)} h:${height.toStringAsFixed(1)} drawX:${drawX.toStringAsFixed(1)} drawY:${drawY.toStringAsFixed(1)} drawW:${drawW.toStringAsFixed(1)} drawH:${drawH.toStringAsFixed(1)}');
+    debugPrint(
+      'DEBUG-SIGN-ANNOT -> using annotation detected on page=$pageIndex; will draw at (x=${drawX.toStringAsFixed(1)}, y=${drawY.toStringAsFixed(1)}) size=${drawW.toStringAsFixed(1)}x${drawH.toStringAsFixed(1)}');
 
         page.graphics
             .drawImage(bitmap, Rect.fromLTWH(drawX, drawY, drawW, drawH));
@@ -435,17 +548,35 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
       for (int i = 0; i < form.fields.count; i++) {
         final sfpdf.PdfField f = form.fields[i];
         final String name = f.name ?? '';
-        if (name != 'assinatura_cliente') continue;
+        // accept assinatura_cliente and assinatura_cliente.<page>
+        if (!name.startsWith('assinatura_cliente')) continue;
         try {
+          // try parse page from name suffix (1-based)
+          int? parsedPage;
+          try {
+            final parts = name.split('.');
+            if (parts.length > 1) {
+              final p1 = int.tryParse(parts[1]);
+              if (p1 != null && p1 > 0) parsedPage = p1 - 1;
+            }
+          } catch (_) {
+            parsedPage = null;
+          }
+
           final loc = _locateFieldWidget(f as dynamic, loaded);
-          int? pageIndex = loc?['page'] as int?;
+
+          // prefer parsedPage (from field name) if present, otherwise use locator
+          int? pageIndex = parsedPage ?? (loc?['page'] as int?);
           double left = (loc?['left'] as double?) ?? 0;
           double top = (loc?['top'] as double?) ?? 0;
           double width = (loc?['width'] as double?) ?? double.nan;
           double height = (loc?['height'] as double?) ?? double.nan;
 
-          debugPrint(
-              'FIELD WIDGET LOC -> page=${pageIndex?.toString() ?? "null"} left=${left.toStringAsFixed(1)} top=${top.toStringAsFixed(1)} width=${width.isNaN ? 0 : width.toStringAsFixed(1)} height=${height.isNaN ? 0 : height.toStringAsFixed(1)}');
+      debugPrint(
+        'FIELD WIDGET LOC -> name=$name parsedPage=${parsedPage?.toString() ?? "null"} page=${pageIndex?.toString() ?? "null"} left=${left.toStringAsFixed(1)} top=${top.toStringAsFixed(1)} width=${width.isNaN ? 0 : width.toStringAsFixed(1)} height=${height.isNaN ? 0 : height.toStringAsFixed(1)}');
+
+      // debug where we plan to draw and why (parsedPage vs locator)
+      debugPrint('DEBUG-SIGN-FIELD -> name=$name parsedPage=${parsedPage?.toString() ?? "null"} locatorPage=${(loc?['page'] as int?)?.toString() ?? "null"} chosenPage=${pageIndex?.toString() ?? "null"}');
 
           // if pageIndex null -> try map top (possibly global) into page by cumulative heights
           if (pageIndex == null) {
@@ -481,21 +612,37 @@ class _FillDocumentScreenState extends State<FillDocumentScreen> {
           if (pageIndex == null) pageIndex = 0; // absolute fallback
 
           // agora pageIndex + left/top/width/height prontos para uso
-          // ... aqui aplique seu draw logic (scale/anchor) ...
           final sfpdf.PdfPage page = loaded.pages[pageIndex];
+          // preserve original image aspect ratio and shrink if necessary to fit
+          double maxW = (width.isNaN || width <= 0) ? page.size.width * 0.5 : width;
+          double maxH = (height.isNaN || height <= 0) ? page.size.height * 0.12 : height;
+          double drawW, drawH;
+          if (imgW > 0 && imgH > 0) {
+            final ratio = imgH / imgW; // height/width
+            // start by fitting to maxW, then shrink if height exceeds maxH
+            drawW = maxW;
+            drawH = drawW * ratio;
+            if (drawH > maxH) {
+              drawH = maxH;
+              drawW = drawH / ratio;
+            }
+          } else {
+            drawW = maxW;
+            drawH = maxH;
+          }
 
           double drawX = left;
-          double drawY = top + height - (height > 0 ? height : 60);
-          double drawW = (width > 0 ? width : 160);
-          double drawH = (height > 0 ? height : 60);
+          double drawY = (!height.isNaN && height > 0) ? (top + height - drawH) : top;
           if (drawX < 0) drawX = 0;
           if (drawY < 0) drawY = 0;
           if (drawX + drawW > page.size.width)
             drawX = (page.size.width - drawW).clamp(0, page.size.width);
           if (drawY + drawH > page.size.height)
             drawY = (page.size.height - drawH).clamp(0, page.size.height);
-          page.graphics
-              .drawImage(bitmap, Rect.fromLTWH(drawX, drawY, drawW, drawH));
+
+          debugPrint('DEBUG-SIGN-FIELD placement -> page:$pageIndex drawX:${drawX.toStringAsFixed(1)} drawY:${drawY.toStringAsFixed(1)} drawW:${drawW.toStringAsFixed(1)} drawH:${drawH.toStringAsFixed(1)}');
+
+          page.graphics.drawImage(bitmap, Rect.fromLTWH(drawX, drawY, drawW, drawH));
           drawn = true;
           break;
         } catch (e) {
