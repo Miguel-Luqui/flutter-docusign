@@ -195,19 +195,6 @@ class _SignaturePainter extends CustomPainter {
       }
     }
     canvas.drawPath(path, paint);
-
-    // debug: desenha último ponto convertido (bolinha vermelha)
-    if (lastLocal != null) {
-      final debugPaint = Paint()..color = Colors.red;
-      canvas.drawCircle(
-        Offset(
-          lastLocal!.dx.clamp(0.0, size.width),
-          lastLocal!.dy.clamp(0.0, size.height),
-        ),
-        6,
-        debugPaint,
-      );
-    }
   }
 
   @override
