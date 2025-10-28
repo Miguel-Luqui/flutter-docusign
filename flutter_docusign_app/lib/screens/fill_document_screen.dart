@@ -760,4 +760,3 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     );
   }
 }
-
