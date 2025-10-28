@@ -21,9 +21,8 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
   Offset? lastLocal;
 
   Future<Uint8List?> _exportSignature() async {
-    final boundary =
-        _repaintKey.currentContext?.findRenderObject()
-            as RenderRepaintBoundary?;
+    final boundary = _repaintKey.currentContext?.findRenderObject()
+        as RenderRepaintBoundary?;
     if (boundary == null) return null;
     final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
     final ByteData? byteData = await image.toByteData(
@@ -33,10 +32,10 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
   }
 
   void _clear() => setState(() {
-    _points.clear();
-    lastGlobal = null;
-    lastLocal = null;
-  });
+        _points.clear();
+        lastGlobal = null;
+        lastLocal = null;
+      });
 
   Offset _globalToLocal(Offset global) {
     final renderObject = _containerKey.currentContext?.findRenderObject();

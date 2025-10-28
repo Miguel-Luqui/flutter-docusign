@@ -9,7 +9,8 @@ dependencies:
   flutter:
     sdk: flutter
   path_provider: ^2.0.15
-  syncfusion_flutter_pdf: ^20.4.41
+  syncfusion_flutter_pdf: ^20.4.54
+  pdfx: ^2.0.2
 
 flutter:
   uses-material-design: true

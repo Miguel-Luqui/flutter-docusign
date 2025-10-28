@@ -3,26 +3,27 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
-import 'package:syncfusion_flutter_pdf/pdf.dart';
+
+// prefixar imports para evitar ambiguidade
+import 'package:syncfusion_flutter_pdf/pdf.dart' as sfpdf;
+import 'package:pdfx/pdfx.dart' as px;
 import 'package:flutter_docusign_app/widgets/signature_pad.dart';
 
 class PdfViewerScreen extends StatefulWidget {
   static const String routeName = '/pdf-viewer';
-
   const PdfViewerScreen({super.key});
-
   @override
   _PdfViewerScreenState createState() => _PdfViewerScreenState();
 }
 
 class _PdfViewerScreenState extends State<PdfViewerScreen> {
   Uint8List? _originalPdfBytes;
-  Uint8List? _signatureImage; // PNG bytes from SignaturePad
+  Uint8List? _signatureImage;
   final Map<String, TextEditingController> _fieldControllers = {};
-  final String signatureFieldName =
-      'assinatura_cliente'; // campo onde a assinatura será aplicada
-
+  final String signatureFieldName = 'assinatura_cliente';
   bool _loading = true;
+
+  px.PdfControllerPinch? _pdfController;
 
   @override
   void initState() {
@@ -35,6 +36,12 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     final bytes = await rootBundle.load('assets/sample_form.pdf');
     _originalPdfBytes = bytes.buffer.asUint8List();
     await _extractFormFields();
+    // inicializa controller do pdfx (abre em memória) — passe a Future, NÃO await
+    _pdfController?.dispose();
+    if (_originalPdfBytes != null) {
+      _pdfController = px.PdfControllerPinch(
+          document: px.PdfDocument.openData(_originalPdfBytes!));
+    }
     setState(() => _loading = false);
   }
 
@@ -42,18 +49,17 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     _fieldControllers.clear();
     if (_originalPdfBytes == null) return;
 
-    // Carrega o PDF com Syncfusion (documento carregado somente para ler campos)
-    final PdfLoadedDocument loaded = PdfLoadedDocument(_originalPdfBytes!);
-    final PdfLoadedForm? form = loaded.form;
+    final sfpdf.PdfDocument loaded =
+        sfpdf.PdfDocument(inputBytes: _originalPdfBytes!);
+    final sfpdf.PdfForm? form = loaded.form;
     if (form != null) {
       for (int i = 0; i < form.fields.count; i++) {
-        final PdfLoadedField f = form.fields[i];
+        final sfpdf.PdfField f = form.fields[i];
         final String name = f.name ?? 'field_$i';
-        // apenas textboxes serão editáveis aqui — você pode estender para combobox/checkbox
         String initial = '';
         try {
-          if (f is PdfLoadedTextBoxField) {
-            initial = f.text ?? '';
+          if (f is sfpdf.PdfTextBoxField) {
+            initial = (f).text ?? '';
           }
         } catch (_) {}
         _fieldControllers[name] = TextEditingController(text: initial);
@@ -66,96 +72,125 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     final Uint8List? bytes = await Navigator.of(context).push<Uint8List>(
       MaterialPageRoute(builder: (_) => const SignaturePadScreen()),
     );
-    if (bytes != null) setState(() => _signatureImage = bytes);
+    if (bytes != null) {
+      setState(() => _signatureImage = bytes);
+      // NÃO recarregamos o viewer — ele continua mostrando o PDF original
+    }
   }
 
   void _removeSignature() {
     setState(() => _signatureImage = null);
+    // NÃO recarregamos o viewer
   }
 
   Future<String> _generatePdfWithEdits() async {
     if (_originalPdfBytes == null) throw Exception('PDF not loaded');
 
-    final PdfLoadedDocument loaded = PdfLoadedDocument(_originalPdfBytes!);
-    final PdfLoadedForm? form = loaded.form;
+    final sfpdf.PdfDocument loaded =
+        sfpdf.PdfDocument(inputBytes: _originalPdfBytes!);
+    final sfpdf.PdfForm? form = loaded.form;
 
     // Preencher campos de texto
     if (form != null) {
       for (int i = 0; i < form.fields.count; i++) {
-        final PdfLoadedField f = form.fields[i];
+        final sfpdf.PdfField f = form.fields[i];
         final String name = f.name ?? '';
         if (_fieldControllers.containsKey(name)) {
           final value = _fieldControllers[name]!.text;
           try {
-            if (f is PdfLoadedTextBoxField) {
-              // Atualiza o valor do campo
-              f.text = value;
-            } else {
-              // se não for textbox, apenas ignore ou implemente conforme necessidade
+            if (f is sfpdf.PdfTextBoxField) {
+              (f).text = value;
             }
           } catch (_) {}
         }
       }
     }
 
-    // Se tiver assinatura, desenhe em todos os campos com o nome correspondente
+    // Desenhar assinatura sobre primeiros campos com nome correspondente (tentativa dinâmica + fallback)
     if (_signatureImage != null && form != null) {
-      final PdfBitmap sigBitmap = PdfBitmap(_signatureImage!);
+      final sfpdf.PdfBitmap sigBitmap = sfpdf.PdfBitmap(_signatureImage!);
+      bool applied = false;
       for (int i = 0; i < form.fields.count; i++) {
-        final PdfLoadedField f = form.fields[i];
+        final sfpdf.PdfField f = form.fields[i];
         final String name = f.name ?? '';
         if (name == signatureFieldName) {
-          // tenta obter página e bounds do campo
           try {
-            if (f is PdfLoadedWidgetField) {
-              final rect = f.bounds;
-              final int pageIndex = f.pageIndex;
-              final PdfLoadedPage page =
-                  loaded.pages[pageIndex] as PdfLoadedPage;
-              // Conversão de coordenadas: Pdf usa origem no canto inferior esquerdo
-              final double x = rect.left;
-              final double yFromTop = rect.top;
-              final double height = rect.height;
-              final double pageHeight = page.size.height;
-              final double y =
-                  pageHeight - yFromTop - height; // y para origem inferior
-              // desenha a imagem e escala para caber no rect
-              page.graphics.drawImage(
-                sigBitmap,
-                Rect.fromLTWH(x, y, rect.width, rect.height),
-              );
+            final dyn = f as dynamic;
+            dynamic rect;
+            int? pageIndex;
+            try {
+              rect = dyn.bounds;
+            } catch (_) {
+              try {
+                rect = dyn.rectangle;
+              } catch (_) {
+                rect = null;
+              }
+            }
+            try {
+              pageIndex = dyn.pageIndex as int?;
+            } catch (_) {
+              pageIndex = null;
+            }
+
+            if (rect != null &&
+                pageIndex != null &&
+                pageIndex >= 0 &&
+                pageIndex < loaded.pages.count) {
+              final sfpdf.PdfPage page = loaded.pages[pageIndex];
+              double x = 0, y = 0, w = 180, h = 80;
+              try {
+                x = (rect.left ?? rect.x ?? 0).toDouble();
+              } catch (_) {}
+              try {
+                y = (rect.top ?? rect.y ?? 0).toDouble();
+              } catch (_) {}
+              try {
+                w = (rect.width ?? 180).toDouble();
+              } catch (_) {}
+              try {
+                h = (rect.height ?? 80).toDouble();
+              } catch (_) {}
+              page.graphics.drawImage(sigBitmap, Rect.fromLTWH(x, y, w, h));
+              applied = true;
             }
           } catch (e) {
-            // falha ao desenhar numa field específica; continuar
             debugPrint('Erro ao aplicar assinatura no campo $name: $e');
+            continue;
           }
         }
       }
+
+      if (!applied && loaded.pages.count > 0) {
+        try {
+          final sfpdf.PdfPage page = loaded.pages[0];
+          const double w = 180.0;
+          const double h = 80.0;
+          final double x = page.size.width - w - 40.0;
+          final double y = page.size.height - h - 40.0;
+          page.graphics.drawImage(sigBitmap, Rect.fromLTWH(x, y, w, h));
+        } catch (_) {}
+      }
     }
 
-    // Flatten form (incorpora valores e remove campos interativos)
     try {
       loaded.form?.flattenAllFields();
     } catch (_) {}
 
-    // Export
-    final List<int> outBytes = loaded.saveSync();
+    final List<int> outBytes = await loaded.save();
     loaded.dispose();
 
-    // Salva em um arquivo na pasta de documentos do app
     final dir = await getApplicationDocumentsDirectory();
-    final file = File(
-      '${dir.path}/signed_${DateTime.now().millisecondsSinceEpoch}.pdf',
-    );
+    final file =
+        File('${dir.path}/signed_${DateTime.now().millisecondsSinceEpoch}.pdf');
     await file.writeAsBytes(outBytes, flush: true);
     return file.path;
   }
 
   @override
   void dispose() {
-    for (final c in _fieldControllers.values) {
-      c.dispose();
-    }
+    for (final c in _fieldControllers.values) c.dispose();
+    _pdfController?.dispose();
     super.dispose();
   }
 
@@ -168,6 +203,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     }
     return ListView(
       shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
       children: _fieldControllers.entries.map((entry) {
         final name = entry.key;
         final controller = entry.value;
@@ -175,6 +211,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
           child: TextField(
             controller: controller,
+            // NÃO atualizamos o viewer enquanto digita
             decoration: InputDecoration(
               labelText: name,
               border: const OutlineInputBorder(),
@@ -203,13 +240,20 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
               setState(() => _loading = true);
               try {
                 final path = await _generatePdfWithEdits();
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text('PDF salvo: $path')));
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text('PDF salvo: $path'),
+                  action: SnackBarAction(
+                    label: 'Abrir',
+                    onPressed: () {
+                      Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => PdfPreviewScreen(path: path),
+                      ));
+                    },
+                  ),
+                ));
               } catch (e) {
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text('Erro: $e')));
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text('Erro: $e')));
               } finally {
                 setState(() => _loading = false);
               }
@@ -223,42 +267,102 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
               child: Column(
                 children: [
                   const SizedBox(height: 12),
-                  // Preview básico: mostra se há assinatura e botões para assinar/remover
+                  // viewer permanece sempre com o PDF original
+                  if (_originalPdfBytes != null && _pdfController != null)
+                    SizedBox(
+                      height: 420,
+                      child: px.PdfViewPinch(
+                        controller: _pdfController!,
+                        scrollDirection: Axis.vertical,
+                      ),
+                    )
+                  else
+                    Container(
+                      height: 420,
+                      color: Colors.grey.shade200,
+                      child: const Center(child: Text('PDF não carregado')),
+                    ),
+                  const SizedBox(height: 12),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 12.0),
-                    child: Row(
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      alignment: WrapAlignment.start,
                       children: [
                         ElevatedButton.icon(
                           icon: const Icon(Icons.edit),
                           label: const Text('Assinar'),
                           onPressed: _openSignaturePad,
                         ),
-                        const SizedBox(width: 8),
                         ElevatedButton.icon(
                           icon: const Icon(Icons.remove_circle),
                           label: const Text('Remover assinatura'),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.redAccent,
-                          ),
+                              backgroundColor: Colors.redAccent),
                           onPressed:
                               _signatureImage != null ? _removeSignature : null,
                         ),
-                        const SizedBox(width: 12),
                         if (_signatureImage != null)
-                          const Text(
-                            'Assinatura pronta',
-                            style: TextStyle(fontWeight: FontWeight.bold),
+                          SizedBox(
+                            width: 160,
+                            height: 56,
+                            child: FittedBox(
+                              fit: BoxFit.contain,
+                              alignment: Alignment.centerLeft,
+                              child: Image.memory(
+                                _signatureImage!,
+                                gaplessPlayback: true,
+                              ),
+                            ),
                           ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 12),
-                  // Lista de campos editáveis
                   _buildFieldsList(),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 12),
                 ],
               ),
             ),
+    );
+  }
+}
+
+class PdfPreviewScreen extends StatelessWidget {
+  final String path;
+  const PdfPreviewScreen({super.key, required this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('PDF Salvo'),
+      ),
+      body: Center(
+        child: ElevatedButton(
+          child: const Text('Abrir PDF'),
+          onPressed: () async {
+            try {
+              final file = File(path);
+              if (await file.exists()) {
+                final controller = px.PdfControllerPinch(
+                    document: px.PdfDocument.openFile(path));
+                Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => Scaffold(
+                    appBar: AppBar(title: const Text('Visualizador de PDF')),
+                    body: px.PdfViewPinch(
+                        controller: controller, scrollDirection: Axis.vertical),
+                  ),
+                ));
+              }
+            } catch (e) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Erro ao abrir PDF: $e')));
+            }
+          },
+        ),
+      ),
     );
   }
 }
