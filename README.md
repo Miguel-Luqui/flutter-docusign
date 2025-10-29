@@ -10,4 +10,4 @@ Aplicativo flutter para assinar documentos padronizados (PDF interativos, AcroFo
 
 3. Insira o documento PDF dentro da pasta assets, com o nome "sample_form" (sujeito à alteração).
 
-4. Rode o aplicativo, visualize o documento, e assine o documento (texto + checkbox + assinatura desenhada).
+4. Rode o aplicativo, visualize e assine o documento (texto + checkbox + assinatura desenhada).
