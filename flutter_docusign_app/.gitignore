@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Document (sample_form.pdf) added in assets folder
+/assets/sample_form.pdf

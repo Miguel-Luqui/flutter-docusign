@@ -1,10 +1,11 @@
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 
 class SignaturePadScreen extends StatefulWidget {
-  const SignaturePadScreen({super.key});
+  final double? targetAspectRatio; // width / height
+  const SignaturePadScreen({super.key, this.targetAspectRatio});
 
   @override
   _SignaturePadScreenState createState() => _SignaturePadScreenState();
@@ -21,9 +22,8 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
   Offset? lastLocal;
 
   Future<Uint8List?> _exportSignature() async {
-    final boundary =
-        _repaintKey.currentContext?.findRenderObject()
-            as RenderRepaintBoundary?;
+    final boundary = _repaintKey.currentContext?.findRenderObject()
+        as RenderRepaintBoundary?;
     if (boundary == null) return null;
     final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
     final ByteData? byteData = await image.toByteData(
@@ -32,11 +32,21 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
     return byteData?.buffer.asUint8List();
   }
 
+  @override
+  void initState() {
+    super.initState();
+    // force landscape while the signature pad is open
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+  }
+
   void _clear() => setState(() {
-    _points.clear();
-    lastGlobal = null;
-    lastLocal = null;
-  });
+        _points.clear();
+        lastGlobal = null;
+        lastLocal = null;
+      });
 
   Offset _globalToLocal(Offset global) {
     final renderObject = _containerKey.currentContext?.findRenderObject();
@@ -68,13 +78,31 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
   }
 
   @override
+  void dispose() {
+    // restore portrait orientations when leaving the signature pad
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final canvasWidth = (screenWidth * 0.95).clamp(280.0, 900.0);
-    const canvasHeight = 220.0;
+  final screenWidth = MediaQuery.of(context).size.width;
+  // make the drawable area flexible: prefer targetAspectRatio when provided
+  final canvasWidth = (screenWidth * 0.95).clamp(280.0, 1400.0);
+  double canvasHeight;
+  if (widget.targetAspectRatio != null && widget.targetAspectRatio! > 0) {
+    // aspect = width / height -> height = width / aspect
+    canvasHeight = (canvasWidth / widget.targetAspectRatio!).clamp(80.0, 800.0);
+  } else {
+    // default: stretched signature (approx 4:1)
+    canvasHeight = (canvasWidth * 0.25).clamp(120.0, 320.0);
+  }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Desenhe sua assinatura')),
+      appBar: AppBar(title: const Text('Draw your signature')),
       body: Column(
         children: [
           const SizedBox(height: 12),
@@ -108,7 +136,7 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
             child: Text(
-              'Assine na área branca acima',
+              'Sign in the white area above',
               style: TextStyle(color: Colors.grey[700]),
             ),
           ),
@@ -131,7 +159,7 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
                         backgroundColor: Colors.blueGrey[800],
                       ),
                       onPressed: _clear,
-                      child: const Text('Limpar'),
+                      child: const Text('Clear'),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -145,7 +173,7 @@ class _SignaturePadScreenState extends State<SignaturePadScreen> {
                         final bytes = await _exportSignature();
                         Navigator.of(context).pop(bytes);
                       },
-                      child: const Text('Confirmar'),
+                      child: const Text('Confirm'),
                     ),
                   ),
                 ],
@@ -196,19 +224,6 @@ class _SignaturePainter extends CustomPainter {
       }
     }
     canvas.drawPath(path, paint);
-
-    // debug: desenha último ponto convertido (bolinha vermelha)
-    if (lastLocal != null) {
-      final debugPaint = Paint()..color = Colors.red;
-      canvas.drawCircle(
-        Offset(
-          lastLocal!.dx.clamp(0.0, size.width),
-          lastLocal!.dy.clamp(0.0, size.height),
-        ),
-        6,
-        debugPaint,
-      );
-    }
   }
 
   @override
