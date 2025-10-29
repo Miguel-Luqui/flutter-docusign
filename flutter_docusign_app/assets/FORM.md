@@ -10,13 +10,11 @@
 
 assinatura_cliente.<número da página> - exemplo: assinatura_cliente.1
 
-*AVISO*: Caso exista múltiplos espaços onde a assinatura será inserida, o tamanho das caixas de texto das assinaturas devem ser *idênticas* (ctrl c + ctrl v).
+**AVISO**: Caso exista múltiplos espaços onde a assinatura será inserida, o tamanho das caixas de texto das assinaturas devem ser **idênticas** (ctrl c + ctrl v).
 
 5. Exporte o PDF como PDF 2.0 com as seguintes configurações:
 
-"Criar Formulário PDF"
-"Formato para envio: PDF"
-"Permitir nomes de campos duplicados"
+"Criar Formulário PDF", "Formato para envio: PDF", "Permitir nomes de campos duplicados"
 
 # Insira o pdf desejado neste diretório com o nome:
 
